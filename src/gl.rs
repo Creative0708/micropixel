@@ -104,6 +104,8 @@ impl Gl {
             Self::delete_shader(&gl, &program, vertex_shader);
             Self::delete_shader(&gl, &program, fragment_shader);
 
+            gl.use_program(Some(program));
+
             let window_size = window.inner_size();
             let bounding_box = crate::calculate_bounding_box(
                 width as f32,
@@ -181,6 +183,8 @@ impl Gl {
                 None,
             );
 
+            gl.clear_color(0.0, 0.0, 0.0, 1.0);
+
             let obj = Self {
                 width,
                 height,
@@ -241,11 +245,10 @@ impl Gl {
         let gl = &self.gl;
 
         unsafe {
-            gl.clear_color(0.0, 0.0, 0.0, 1.0);
             gl.clear(glow::COLOR_BUFFER_BIT);
 
-            gl.active_texture(glow::TEXTURE0);
-            gl.bind_texture(glow::TEXTURE_2D, Some(self.texture));
+            // gl.active_texture(glow::TEXTURE0);
+            // gl.bind_texture(glow::TEXTURE_2D, Some(self.texture));
             gl.tex_image_2d(
                 glow::TEXTURE_2D,
                 0,
@@ -257,12 +260,11 @@ impl Gl {
                 glow::UNSIGNED_BYTE,
                 Some(pixels),
             );
-            gl.use_program(Some(self.program));
-            gl.bind_vertex_array(Some(self.vao));
+            // gl.bind_vertex_array(Some(self.vao));
 
             gl.draw_arrays(glow::TRIANGLE_STRIP, 0, 4);
 
-            self.check_for_gl_error();
+            // self.check_for_gl_error();
         }
         // window.request_redraw();
         self.surface.swap_buffers(&self.gl_context).unwrap();
@@ -299,6 +301,11 @@ impl Gl {
                 glow::STATIC_DRAW,
             );
         }
+    }
+
+    #[inline]
+    pub fn bounding_box(&self) -> (f32, f32, f32, f32) {
+        self.bounding_box
     }
 }
 

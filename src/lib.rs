@@ -1,4 +1,5 @@
 use std::{
+    collections::HashMap,
     error::Error,
     fmt::{Debug, Display},
     iter,
@@ -7,18 +8,21 @@ use std::{
     time::{Duration, Instant},
 };
 
+use audio::Audio;
 use glutin::config::{Config, ConfigTemplateBuilder, GlConfig};
 use glutin_winit::DisplayBuilder;
 use winit::{
     dpi::PhysicalSize,
-    event::{StartCause, WindowEvent},
+    event::{ElementState, StartCause},
     event_loop::{ControlFlow, EventLoop, EventLoopBuilder},
+    keyboard::PhysicalKey,
     window::{Window, WindowBuilder},
 };
 
 mod gl;
 use gl::Gl;
-
+pub mod audio;
+pub use winit::keyboard::KeyCode;
 pub struct Icon<'a> {
     width: u32,
     height: u32,
@@ -89,15 +93,32 @@ impl<'a> Default for EngineBuilder<'a> {
     }
 }
 
+#[derive(PartialEq, Eq)]
+enum PressedState {
+    JustPressed,
+    Pressed,
+    JustReleased,
+}
+
 pub struct Engine {
     width: u32,
     height: u32,
+
+    window_width: u32,
+    window_height: u32,
 
     event_loop: Option<EventLoop<()>>,
     window: Window,
     gl_config: Config,
 
     gl: Option<Gl>,
+
+    audio: Audio,
+
+    mouse_pos: (f32, f32),
+    is_mouse_in_window: bool,
+
+    keys_pressed: HashMap<KeyCode, PressedState>,
 }
 
 impl Engine {
@@ -136,19 +157,27 @@ impl Engine {
                 configs.max_by_key(|config| config.num_samples()).unwrap()
             }) else { panic!("expected there to be a window") };
 
+        let window_size = window.inner_size();
+
         Self {
             width,
             height,
+            window_width: window_size.width,
+            window_height: window_size.height,
             window,
             event_loop: Some(event_loop),
             gl_config,
             gl: None,
+            audio: Audio::new(),
+            mouse_pos: (0.0, 0.0),
+            is_mouse_in_window: false,
+            keys_pressed: HashMap::new(),
         }
     }
 
-    pub fn run<F>(&mut self, handle_frame: F) -> Result<(), Box<dyn Error>>
+    pub fn run<F>(&mut self, mut handle_frame: F) -> Result<(), Box<dyn Error>>
     where
-        F: Fn(&mut Context, &mut [u8]) -> bool,
+        F: FnMut(&mut Context, &mut [u8]) -> (),
     {
         let gl = Gl::new(&self.window, &self.gl_config, self.width, self.height);
 
@@ -168,6 +197,7 @@ impl Engine {
             .unwrap()
             .run(|event, window_target| {
                 use winit::event::Event as E;
+                use winit::event::WindowEvent as W;
 
                 let cur_time = instant.elapsed().as_nanos();
                 match event {
@@ -192,12 +222,14 @@ impl Engine {
                         self.gl = None;
                     }
                     E::WindowEvent { event, .. } => match event {
-                        WindowEvent::Resized(size) => {
+                        W::Resized(size) => {
                             if size.width != 0 && size.height != 0 && self.gl.is_some() {
                                 self.gl.as_mut().unwrap().window_resize(
                                     NonZeroU32::new(size.width).unwrap(),
                                     NonZeroU32::new(size.height).unwrap(),
                                 );
+                                self.window_width = size.width;
+                                self.window_height = size.height;
                                 // self.width = size.width;
                                 // self.height = size.height;
 
@@ -205,33 +237,100 @@ impl Engine {
                                 // if pixels.len() < new_pixel_buf_len
                             }
                         }
-                        WindowEvent::CloseRequested => {
+                        W::CloseRequested => {
                             window_target.exit();
                         }
-                        WindowEvent::RedrawRequested => {
+                        W::RedrawRequested => {
                             if let Some(gl) = &mut self.gl {
                                 if cur_time >= next_frame_time {
                                     while cur_time >= next_frame_time {
                                         next_frame_time += frame_nanos;
 
-                                        current_frame += 1;
-
                                         let mut ctx = Context {
                                             width: self.width,
                                             height: self.height,
                                             current_frame,
+
+                                            audio: &mut self.audio,
+
+                                            mouse_pos: self.mouse_pos,
+                                            is_mouse_in_window: self.is_mouse_in_window,
+
+                                            keys_pressed: &self.keys_pressed,
+
                                             will_exit: false,
                                         };
                                         handle_frame(&mut ctx, &mut pixels);
 
-                                        if ctx.will_exit {}
+                                        if ctx.will_exit {
+                                            window_target.exit();
+                                            break;
+                                        }
+
+                                        current_frame += 1;
+
+                                        for state in self.keys_pressed.values_mut() {
+                                            if *state == PressedState::JustPressed {
+                                                *state = PressedState::Pressed;
+                                            }
+                                        }
+                                        self.keys_pressed.retain(|_, state| {
+                                            *state != PressedState::JustReleased
+                                        });
                                     }
                                     gl.draw(&mut self.window, &mut pixels);
                                 }
                             }
                         }
+                        W::CursorMoved { position, .. } => {
+                            if let Some(gl) = self.gl.as_ref() {
+                                let bounding_box = gl.bounding_box();
+                                let half_dimensions = (
+                                    self.window_width as f32 * 0.5,
+                                    self.window_height as f32 * 0.5,
+                                );
+                                let (bounding_box_min_corner, bounding_box_dimensions) = (
+                                    (
+                                        bounding_box.0 * half_dimensions.0 + half_dimensions.0,
+                                        bounding_box.1 * half_dimensions.1 + half_dimensions.1,
+                                    ),
+                                    (
+                                        (bounding_box.2 - bounding_box.0) * half_dimensions.0,
+                                        (bounding_box.3 - bounding_box.1) * half_dimensions.1,
+                                    ),
+                                );
+                                self.mouse_pos = (
+                                    (position.x as f32 - bounding_box_min_corner.0)
+                                        / bounding_box_dimensions.0
+                                        * self.width as f32,
+                                    (position.y as f32 - bounding_box_min_corner.1)
+                                        / bounding_box_dimensions.1
+                                        * self.height as f32,
+                                )
+                            }
+                        }
+                        W::CursorEntered { .. } => self.is_mouse_in_window = true,
+                        W::CursorLeft { .. } => self.is_mouse_in_window = false,
+                        W::KeyboardInput { event, .. } => {
+                            if !event.repeat {
+                                if let PhysicalKey::Code(key_code) = event.physical_key {
+                                    match event.state {
+                                        ElementState::Pressed => {
+                                            self.keys_pressed
+                                                .insert(key_code, PressedState::JustPressed);
+                                        }
+                                        ElementState::Released => {
+                                            self.keys_pressed
+                                                .insert(key_code, PressedState::JustReleased);
+                                        }
+                                    }
+                                }
+                            }
+                        }
 
-                        _ => (),
+                        e => {
+                            dbg!(e);
+                        }
                     },
                     E::AboutToWait => {
                         if cur_time < next_frame_time {
@@ -258,15 +357,22 @@ impl Engine {
     }
 }
 
-pub struct Context {
+pub struct Context<'a> {
     width: u32,
     height: u32,
     current_frame: u64,
 
+    audio: &'a mut Audio,
+
+    mouse_pos: (f32, f32),
+    is_mouse_in_window: bool,
+
+    keys_pressed: &'a HashMap<KeyCode, PressedState>,
+
     will_exit: bool,
 }
 
-impl Context {
+impl<'a> Context<'a> {
     pub fn exit(&mut self) {
         self.will_exit = true;
     }
@@ -291,8 +397,59 @@ impl Context {
         (self.width, self.height)
     }
     #[inline]
+    pub fn mouse_x(&self) -> f32 {
+        self.mouse_pos.0
+    }
+    #[inline]
+    pub fn mouse_y(&self) -> f32 {
+        self.mouse_pos.1
+    }
+    #[inline]
+    pub fn mouse_pos(&self) -> (f32, f32) {
+        self.mouse_pos
+    }
+    #[inline]
+    pub fn integer_mouse_pos(&self) -> (i32, i32) {
+        (self.mouse_pos.0 as i32, self.mouse_pos.1 as i32)
+    }
+    #[inline]
+    pub fn is_mouse_in_window(&self) -> bool {
+        self.is_mouse_in_window
+    }
+    #[inline]
+    pub fn is_mouse_in_game_area(&self) -> bool {
+        if !self.is_mouse_in_window() {
+            return false;
+        }
+        let (mouse_x, mouse_y) = self.integer_mouse_pos();
+        mouse_x >= 0 && mouse_x < self.width as i32 && mouse_y >= 0 && mouse_y < self.height as i32
+    }
+    #[inline]
     pub fn will_exit(&self) -> bool {
         self.will_exit
+    }
+    #[inline]
+    pub fn audio(&mut self) -> &mut Audio {
+        self.audio
+    }
+
+    #[inline]
+    pub fn is_key_pressed(&self, key_code: KeyCode) -> bool {
+        self.keys_pressed
+            .get(&key_code)
+            .map_or(false, |state| *state != PressedState::JustReleased)
+    }
+    #[inline]
+    pub fn is_key_just_pressed(&self, key_code: KeyCode) -> bool {
+        self.keys_pressed
+            .get(&key_code)
+            .map_or(false, |state| *state == PressedState::JustPressed)
+    }
+    #[inline]
+    pub fn is_key_just_released(&self, key_code: KeyCode) -> bool {
+        self.keys_pressed
+            .get(&key_code)
+            .map_or(false, |state| *state == PressedState::JustReleased)
     }
 }
 
