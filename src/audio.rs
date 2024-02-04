@@ -172,7 +172,6 @@ pub struct AudioChannel {
     channel_volume: f32,
 
     current_frame: u64,
-    note_end_frame: u64,
     note_volume: f32,
     volume_sweep: f32,
     pitch: f32,
@@ -202,11 +201,11 @@ impl AudioChannel {
         }
     }
 
-    fn next_sample(&mut self, frame: u64) -> f32 {
+    fn next_sample(&mut self, _frame: u64) -> f32 {
         if self.stopped || matches!(self.data, AudioChannelData::None) {
             return 0.0;
         }
-        if frame == self.note_end_frame || self.note_volume <= 0.0 && self.volume_sweep <= 0.0 {
+        if self.note_volume <= 0.0 && self.volume_sweep <= 0.0 {
             self.stop();
             return 0.0;
         }
@@ -223,6 +222,7 @@ impl AudioChannel {
                 } else {
                     let middle_osc_timer = next_sample as f32 / sample.len() as f32;
                     let this_sample_portion = (middle_osc_timer - self.osc_timer) / self.pitch;
+                    // dbg!(this_sample_portion);
                     sample[this_sample] * this_sample_portion
                         + sample[next_sample % sample.len()] * (1.0 - this_sample_portion)
                 }
@@ -258,7 +258,6 @@ impl AudioChannel {
     }
 
     fn stop_notes(&mut self) {
-        self.note_end_frame = u64::MAX;
         self.osc_timer = 0.0;
         self.note_volume = 1.0;
         self.volume_sweep = 0.0;
@@ -271,36 +270,50 @@ impl AudioChannel {
         self.stopped = true;
     }
 
+    pub fn set_channel_volume(&mut self, volume: f32) {
+        self.channel_volume = volume;
+    }
+
     // Note-playing functions
 
     fn get_pitch(note: i16) -> f32 {
         440.0 * 2f32.powf(note as f32 * (1.0 / 12.0))
     }
 
-    pub fn play_pitch(&mut self, note: i16) {
+    pub fn play(&mut self) {
+        self.stop_notes();
+        self.pitch = 0.0;
+        self.stopped = false;
+    }
+    pub fn play_note(&mut self, note: i16) {
         self.stop_notes();
         self.pitch = Self::get_pitch(note) / SAMPLE_RATE as f32;
         self.stopped = false;
     }
-    pub fn play_pitch_for(&mut self, note: i16, seconds: f32) {
-        self.play_pitch(note);
-        self.note_end_frame = self.current_frame + (seconds * SAMPLE_RATE as f32) as u64;
+    pub fn play_pitch(&mut self, hertz: f32) {
+        self.stop_notes();
+        self.pitch = hertz / SAMPLE_RATE as f32;
+        self.stopped = false;
     }
 
     // "Modifier" functions
 
+    pub fn set_note(&mut self, note: i16) {
+        self.pitch = Self::get_pitch(note) / SAMPLE_RATE as f32;
+    }
+    pub fn set_pitch(&mut self, hertz: f32) {
+        self.pitch = hertz / SAMPLE_RATE as f32;
+    }
     pub fn set_volume(&mut self, volume: f32) {
         self.note_volume = volume;
     }
 
-    pub fn volume_sweep(&mut self, end_volume: f32) {
-        self.volume_sweep =
-            (end_volume - self.note_volume) / (self.note_end_frame - self.current_frame) as f32
+    pub fn volume_sweep(&mut self, end_volume: f32, seconds: f32) {
+        self.volume_sweep = (end_volume - self.note_volume) / (seconds * SAMPLE_RATE as f32)
     }
-    pub fn pitch_sweep(&mut self, end_note: i16) {
+    pub fn pitch_sweep(&mut self, end_note: i16, seconds: f32) {
         let end_pitch = Self::get_pitch(end_note) / SAMPLE_RATE as f32;
-        self.pitch_sweep =
-            (end_pitch - self.pitch) / (self.note_end_frame - self.current_frame) as f32
+        self.pitch_sweep = (end_pitch - self.pitch) / (seconds * SAMPLE_RATE as f32)
     }
 }
 
@@ -310,7 +323,6 @@ impl Default for AudioChannel {
             channel_volume: 0.3,
 
             current_frame: 0,
-            note_end_frame: u64::MAX,
             note_volume: 1.0,
             volume_sweep: 0.0,
             pitch: 0.0,

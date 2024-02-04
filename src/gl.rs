@@ -106,33 +106,11 @@ impl Gl {
 
             gl.use_program(Some(program));
 
-            let window_size = window.inner_size();
-            let bounding_box = crate::calculate_bounding_box(
-                width as f32,
-                height as f32,
-                window_size.width as f32,
-                window_size.height as f32,
-            );
-
             let vao = gl.create_vertex_array().unwrap();
             gl.bind_vertex_array(Some(vao));
 
             let pos_vbo = gl.create_buffer().unwrap();
             gl.bind_buffer(glow::ARRAY_BUFFER, Some(pos_vbo));
-            gl.buffer_data_u8_slice(
-                glow::ARRAY_BUFFER,
-                bytemuck::must_cast_slice::<f32, _>(&[
-                    bounding_box.0,
-                    bounding_box.1,
-                    bounding_box.2,
-                    bounding_box.1,
-                    bounding_box.0,
-                    bounding_box.3,
-                    bounding_box.2,
-                    bounding_box.3,
-                ]),
-                glow::STATIC_DRAW,
-            );
 
             gl.enable_vertex_attrib_array(0);
             gl.vertex_attrib_pointer_f32(0, 2, glow::FLOAT, false, 0, 0);
@@ -189,7 +167,7 @@ impl Gl {
                 width,
                 height,
 
-                bounding_box,
+                bounding_box: (0.0, 0.0, 0.0, 0.0),
                 surface,
 
                 gl,
@@ -270,19 +248,57 @@ impl Gl {
         self.surface.swap_buffers(&self.gl_context).unwrap();
     }
 
-    pub fn window_resize(&mut self, window_width: NonZeroU32, window_height: NonZeroU32) {
-        self.surface
-            .resize(&self.gl_context, window_width, window_height);
-        let bounding_box = crate::calculate_bounding_box(
-            self.width as f32,
-            self.height as f32,
-            window_width.get() as f32,
-            window_height.get() as f32,
+    pub fn recalculate_dimensions(
+        &mut self,
+        window_width: u32,
+        window_height: u32,
+        fullscreen_data: Option<(u32, u32)>,
+    ) {
+        self.surface.resize(
+            &self.gl_context,
+            NonZeroU32::new(window_width).unwrap(),
+            NonZeroU32::new(window_height).unwrap(),
         );
+
+        let (window_width, window_height) = (window_width as f32, window_height as f32);
+
+        let bounding_box = if let Some((target_width, target_height)) = fullscreen_data {
+            let target_pixel_size = f32::min(
+                window_width / target_width as f32,
+                window_height / target_height as f32,
+            );
+            let min_pixel_size = f32::max(
+                window_width / target_width as f32,
+                window_height / target_height as f32,
+            ) * 0.5;
+            let pixel_size = f32::max(target_pixel_size, min_pixel_size);
+
+            self.width = (window_width / pixel_size).ceil() as u32;
+            self.height = (window_height / pixel_size).ceil() as u32;
+            let radii = (
+                self.width as f32 * pixel_size / window_width,
+                self.height as f32 * pixel_size / window_height,
+            );
+            (-radii.0, -radii.1, radii.0, radii.1)
+        } else {
+            let window_radii = crate::calculate_fit_radii(
+                self.width as f32,
+                self.height as f32,
+                window_width,
+                window_height,
+                0.1,
+            );
+            let radii = (
+                window_radii.0 / window_width,
+                window_radii.1 / window_height,
+            );
+            (-radii.0, -radii.1, radii.0, radii.1)
+        };
         self.bounding_box = bounding_box;
+
         let gl = &mut self.gl;
         unsafe {
-            gl.viewport(0, 0, window_width.get() as i32, window_height.get() as i32);
+            gl.viewport(0, 0, window_width as i32, window_height as i32);
 
             gl.bind_vertex_array(Some(self.vao));
             gl.bind_buffer(glow::ARRAY_BUFFER, Some(self.pos_vbo));
@@ -306,6 +322,14 @@ impl Gl {
     #[inline]
     pub fn bounding_box(&self) -> (f32, f32, f32, f32) {
         self.bounding_box
+    }
+    #[inline]
+    pub fn width(&self) -> u32 {
+        self.width
+    }
+    #[inline]
+    pub fn height(&self) -> u32 {
+        self.height
     }
 }
 

@@ -2,7 +2,7 @@ use micropixel::KeyCode;
 use tinyrand::Rand;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let mut engine = micropixel::EngineBuilder::with_dimensions(40, 80)
+    let mut engine = micropixel::EngineBuilder::fullscreen(40, 80)
         .title("Test")
         .build();
 
@@ -87,28 +87,33 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 for i in (-4..=5).rev() {
                     v.push(i as f32 * 0.2);
                 }
-                synth = audio.add_synth_channel(v.into_boxed_slice());
+                // synth = audio.add_synth_channel(v.into_boxed_slice());
+                synth = audio.add_synth_channel(Box::new([-1.0, 1.0]));
             }
 
             let mut channels = audio.channels();
 
             if frame == 0 {
-                // channels.get(synth).play_pitch(-24);
+                // channels.get(synth).play_note(-24);
+                let synth = channels.get(synth);
+                synth.play();
             }
 
-            // let mut val_iter = NOTE_DATA
-            //     .iter()
-            //     .skip_while(|(x, _)| (frame != (*x + 4) as u64 * 3))
-            //     .map(|(x, y)| (*x, *y + 24));
+            let mut val_iter = NOTE_DATA
+                .iter()
+                .skip_while(|(x, _)| (frame != (*x + 4) as u64 * 3))
+                .map(|(x, y)| (*x, *y));
 
-            // if let Some((time, val)) = val_iter.next() {
-            //     let synth = channels.get(synth);
-            //     if let Some((next_time, _)) = val_iter.next() {
-            //         synth.play_pitch_for(val, (next_time - time) as f32 / 10.0 - 0.01);
-            //     } else {
-            //         synth.play_pitch(val);
-            //     }
-            // }
+            if let Some((time, val)) = val_iter.next() {
+                let synth = channels.get(synth);
+                // if let Some((next_time, _)) = val_iter.next() {
+                //     synth.play_pitch_(val, (next_time - time) as f32 / 10.0 - 0.01);
+                // } else {
+                synth.set_note(val);
+                synth.set_volume(1.0);
+                synth.volume_sweep(0.0, 1.0);
+                // }
+            }
         }
         // if frame == (128 + 4) * 3 {
         //     ctx.exit();
@@ -118,14 +123,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         for y in 0..height {
             for x in 0..width {
                 let idx = (y * width + x) as usize * 3;
-                let (r, g, b) = hsv_to_rgb(
-                    ((x as f32 + y as f32 + frame as f32 * 0.1) * 20.0 % 256.0) as u8,
-                    220,
-                    255,
-                );
-                pixels[idx] = r;
-                pixels[idx + 1] = g;
-                pixels[idx + 2] = b;
+                if x == 0 || x == width - 1 || y == 0 || y == height - 1 {
+                    pixels[idx] = 255;
+                    pixels[idx + 1] = 255;
+                    pixels[idx + 2] = 255;
+                } else {
+                    let (r, g, b) = hsv_to_rgb(
+                        ((x as f32 + y as f32 + frame as f32 * 0.1) * 20.0 % 256.0) as u8,
+                        220,
+                        255,
+                    );
+                    pixels[idx] = r;
+                    pixels[idx + 1] = g;
+                    pixels[idx + 2] = b;
+                }
             }
         }
         let (mouse_x, mouse_y) = ctx.integer_mouse_pos();
