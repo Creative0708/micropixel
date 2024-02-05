@@ -10,7 +10,7 @@ use cpal::{
 };
 use tinyrand::{Rand, StdRand};
 
-pub const SAMPLE_RATE: u32 = 44100;
+const MIN_SAMPLE_RATE: u32 = 44100;
 
 pub struct Audio {
     active_audio: Option<ActiveAudio>,
@@ -54,6 +54,7 @@ impl Audio {
 }
 
 struct ActiveAudio {
+    sample_rate: u32,
     channels: Arc<Mutex<Vec<AudioChannel>>>,
     rand: StdRand,
     _stream: Stream,
@@ -66,6 +67,7 @@ impl ActiveAudio {
         mutex: Arc<Mutex<Vec<AudioChannel>>>,
     ) -> Stream {
         let mut frame = 0;
+        let num_channels = config.channels;
 
         device
             .build_output_stream(
@@ -73,16 +75,10 @@ impl ActiveAudio {
                 move |data: &mut [S], _callback_info: &OutputCallbackInfo| {
                     let mut channels = mutex.lock().unwrap();
 
-                    for x in data {
-                        let mut tot: f32 = 0.0;
-                        for channel in channels.iter_mut() {
-                            tot += channel.next_sample(frame);
-                        }
-                        *x = tot.to_sample();
+                    for x in data.chunks_exact_mut(num_channels as usize) {
+                        let sample = Self::next_sample(&mut channels, frame);
+                        x.fill(sample.to_sample());
                         frame += 1;
-                    }
-                    for channel in channels.iter_mut() {
-                        channel.set_current_frame(frame);
                     }
                 },
                 |err| {
@@ -93,44 +89,96 @@ impl ActiveAudio {
             .unwrap()
     }
 
+    fn next_sample(channels: &mut [AudioChannel], frame: u64) -> f32 {
+        let mut tot: f32 = 0.0;
+        for channel in channels.iter_mut() {
+            tot += channel.next_sample(frame);
+        }
+        tot
+    }
+
     fn new() -> Result<Option<Self>, Box<dyn Error>> {
         let host = cpal::default_host();
         let Some(device) = host.default_output_device() else { return Ok(None); };
-        let config = device
+        let config_range = device
             .supported_output_configs()?
-            .filter(|config| {
-                SAMPLE_RATE >= config.min_sample_rate().0
-                    && SAMPLE_RATE <= config.max_sample_rate().0
-                    && matches!(
-                        config.sample_format(),
-                        SampleFormat::F32 | SampleFormat::I32 | SampleFormat::U32
-                    )
+            .min_by_key(|config| {
+                let sample_rate = config.min_sample_rate().0.max(MIN_SAMPLE_RATE);
+
+                let sample_rate_score = if sample_rate < MIN_SAMPLE_RATE {
+                    MIN_SAMPLE_RATE * 1000 / sample_rate
+                } else {
+                    sample_rate * 100 / MIN_SAMPLE_RATE
+                };
+
+                let buffer_size_score = match config.buffer_size() {
+                    SupportedBufferSize::Unknown => 5000,
+                    SupportedBufferSize::Range { min, .. } => (*min * 1000) / sample_rate,
+                };
+
+                let channel_score = config.channels() as u32 * 2000;
+
+                let audio_format_score = match config.sample_format() {
+                    SampleFormat::I8 | SampleFormat::U8 => 500,
+                    SampleFormat::I16
+                    | SampleFormat::U16
+                    | SampleFormat::I32
+                    | SampleFormat::U32 => 200,
+                    SampleFormat::F32 => 0,
+                    SampleFormat::I64 | SampleFormat::U64 | SampleFormat::F64 => 400,
+                    _ => unreachable!(),
+                };
+
+                sample_rate_score + buffer_size_score + audio_format_score + channel_score
             })
-            .min_by_key(|config| match config.buffer_size() {
-                SupportedBufferSize::Unknown => u32::MAX,
-                SupportedBufferSize::Range { min, .. } => *min,
-            })
-            .ok_or_else(|| crate::StrError::new(&"no supported configs available"))?
-            .with_sample_rate(SampleRate(SAMPLE_RATE));
+            .ok_or_else(|| crate::StrError::new(&"no supported configs available"))?;
+        let sample_rate = config_range
+            .min_sample_rate()
+            .max(SampleRate(MIN_SAMPLE_RATE));
+        let config = config_range.with_sample_rate(sample_rate);
+
+        dbg!(&config);
 
         let mutex = Arc::new(Mutex::new(Vec::new()));
 
         let stream = match config.sample_format() {
+            SampleFormat::I8 => {
+                Self::get_output_stream::<i8>(device, &config.into(), mutex.clone())
+            }
+            SampleFormat::I16 => {
+                Self::get_output_stream::<i16>(device, &config.into(), mutex.clone())
+            }
+            SampleFormat::I32 => {
+                Self::get_output_stream::<i32>(device, &config.into(), mutex.clone())
+            }
+            SampleFormat::I64 => {
+                Self::get_output_stream::<i64>(device, &config.into(), mutex.clone())
+            }
+            SampleFormat::U8 => {
+                Self::get_output_stream::<u8>(device, &config.into(), mutex.clone())
+            }
+            SampleFormat::U16 => {
+                Self::get_output_stream::<u16>(device, &config.into(), mutex.clone())
+            }
+            SampleFormat::U32 => {
+                Self::get_output_stream::<u32>(device, &config.into(), mutex.clone())
+            }
+            SampleFormat::U64 => {
+                Self::get_output_stream::<u64>(device, &config.into(), mutex.clone())
+            }
             SampleFormat::F32 => {
                 Self::get_output_stream::<f32>(device, &config.into(), mutex.clone())
             }
-            SampleFormat::I32 => {
-                Self::get_output_stream::<i16>(device, &config.into(), mutex.clone())
+            SampleFormat::F64 => {
+                Self::get_output_stream::<f64>(device, &config.into(), mutex.clone())
             }
-            SampleFormat::U32 => {
-                Self::get_output_stream::<u16>(device, &config.into(), mutex.clone())
-            }
-            other => panic!("unsupported audio format: {other}"),
+            _ => unreachable!(),
         };
 
         stream.play().unwrap();
 
         let obj = Self {
+            sample_rate: sample_rate.0,
             channels: mutex.clone(),
             rand: Default::default(),
             _stream: stream,
@@ -141,12 +189,12 @@ impl ActiveAudio {
 
     pub fn add_synth_channel(&mut self, sample: Box<[f32]>) -> u32 {
         let mut channels = self.channels.lock().unwrap();
-        channels.push(AudioChannel::synth(sample));
+        channels.push(AudioChannel::synth(self.sample_rate, sample));
         channels.len() as u32 - 1
     }
     pub fn add_noise_channel(&mut self) -> u32 {
         let mut channels = self.channels.lock().unwrap();
-        channels.push(AudioChannel::noise(self.rand.next_u32()));
+        channels.push(AudioChannel::noise(self.sample_rate, self.rand.next_u32()));
         channels.len() as u32 - 1
     }
 
@@ -169,9 +217,10 @@ impl<'a> AudioChannels<'a> {
 
 #[derive(Debug)]
 pub struct AudioChannel {
+    sample_rate: f32,
+
     channel_volume: f32,
 
-    current_frame: u64,
     note_volume: f32,
     volume_sweep: f32,
     pitch: f32,
@@ -185,18 +234,26 @@ pub struct AudioChannel {
 }
 
 impl AudioChannel {
-    fn synth(sample: Box<[f32]>) -> Self {
+    fn synth(sample_rate: u32, sample: Box<[f32]>) -> Self {
         Self {
             data: AudioChannelData::Synth { sample },
-            ..Default::default()
+            ..Self::with_sample_rate(sample_rate)
         }
     }
-    fn noise(lfsr: u32) -> Self {
+
+    fn noise(sample_rate: u32, lfsr: u32) -> Self {
         Self {
             data: AudioChannelData::Noise {
                 lfsr,
                 last_value: 0.0,
             },
+            ..Self::with_sample_rate(sample_rate)
+        }
+    }
+
+    fn with_sample_rate(sample_rate: u32) -> Self {
+        Self {
+            sample_rate: sample_rate as f32,
             ..Default::default()
         }
     }
@@ -253,10 +310,6 @@ impl AudioChannel {
         sample
     }
 
-    fn set_current_frame(&mut self, frame: u64) {
-        self.current_frame = frame;
-    }
-
     fn stop_notes(&mut self) {
         self.osc_timer = 0.0;
         self.note_volume = 1.0;
@@ -287,42 +340,43 @@ impl AudioChannel {
     }
     pub fn play_note(&mut self, note: i16) {
         self.stop_notes();
-        self.pitch = Self::get_pitch(note) / SAMPLE_RATE as f32;
+        self.pitch = Self::get_pitch(note) / self.sample_rate;
         self.stopped = false;
     }
     pub fn play_pitch(&mut self, hertz: f32) {
         self.stop_notes();
-        self.pitch = hertz / SAMPLE_RATE as f32;
+        self.pitch = hertz / self.sample_rate;
         self.stopped = false;
     }
 
     // "Modifier" functions
 
     pub fn set_note(&mut self, note: i16) {
-        self.pitch = Self::get_pitch(note) / SAMPLE_RATE as f32;
+        self.pitch = Self::get_pitch(note) / self.sample_rate;
     }
     pub fn set_pitch(&mut self, hertz: f32) {
-        self.pitch = hertz / SAMPLE_RATE as f32;
+        self.pitch = hertz / self.sample_rate;
     }
     pub fn set_volume(&mut self, volume: f32) {
         self.note_volume = volume;
     }
 
     pub fn volume_sweep(&mut self, end_volume: f32, seconds: f32) {
-        self.volume_sweep = (end_volume - self.note_volume) / (seconds * SAMPLE_RATE as f32)
+        self.volume_sweep = (end_volume - self.note_volume) / (seconds * self.sample_rate)
     }
     pub fn pitch_sweep(&mut self, end_note: i16, seconds: f32) {
-        let end_pitch = Self::get_pitch(end_note) / SAMPLE_RATE as f32;
-        self.pitch_sweep = (end_pitch - self.pitch) / (seconds * SAMPLE_RATE as f32)
+        let end_pitch = Self::get_pitch(end_note) / self.sample_rate;
+        self.pitch_sweep = (end_pitch - self.pitch) / (seconds * self.sample_rate)
     }
 }
 
 impl Default for AudioChannel {
     fn default() -> Self {
         Self {
-            channel_volume: 0.3,
+            sample_rate: 0.0,
 
-            current_frame: 0,
+            channel_volume: 0.05,
+
             note_volume: 1.0,
             volume_sweep: 0.0,
             pitch: 0.0,

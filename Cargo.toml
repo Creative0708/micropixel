@@ -21,5 +21,12 @@ opt-level = "z"
 panic = "abort"
 strip = true
 
+[target.stable-x86_64-pc-windows-gnu]
+ar = "/usr/bin/x86_64-w64-mingw32-ar"
+linker = "/usr/bin/x86_64-w64-mingw32-gcc"
+
 [[example]]
 name = "test"
+
+[[example]]
+name = "test2"

@@ -71,24 +71,25 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     ];
 
     let mut synth = 0;
+    let mut noise = 0;
     let mut rand = tinyrand::StdRand::default();
-    engine.run(move |ctx, pixels| {
+    let mut is_random = false;
+    engine.run(move |ctx, audio, pixels| {
         let (width, height) = ctx.dimensions();
         let frame = ctx.current_frame();
 
         {
-            let audio = ctx.audio();
-
             if frame == 0 {
-                let mut v = Vec::new();
-                for i in -5..5 {
-                    v.push(i as f32 * 0.2);
-                }
-                for i in (-4..=5).rev() {
-                    v.push(i as f32 * 0.2);
-                }
+                // let mut v = Vec::new();
+                // for i in -5..5 {
+                //     v.push(i as f32 * 0.2);
+                // }
+                // for i in (-4..=5).rev() {
+                //     v.push(i as f32 * 0.2);
+                // }
                 // synth = audio.add_synth_channel(v.into_boxed_slice());
                 synth = audio.add_synth_channel(Box::new([-1.0, 1.0]));
+                noise = audio.add_noise_channel();
             }
 
             let mut channels = audio.channels();
@@ -104,41 +105,47 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .skip_while(|(x, _)| (frame != (*x + 4) as u64 * 3))
                 .map(|(x, y)| (*x, *y));
 
-            if let Some((time, val)) = val_iter.next() {
+            if let Some((_, val)) = val_iter.next() {
                 let synth = channels.get(synth);
-                // if let Some((next_time, _)) = val_iter.next() {
-                //     synth.play_pitch_(val, (next_time - time) as f32 / 10.0 - 0.01);
-                // } else {
+
                 synth.set_note(val);
                 synth.set_volume(1.0);
                 synth.volume_sweep(0.0, 1.0);
-                // }
+            }
+
+            if ctx.is_key_just_pressed(KeyCode::ShiftLeft) {
+                is_random = true;
+                channels.get(noise).play_note(40);
+                channels.get(synth).set_channel_volume(0.0);
+            } else if ctx.is_key_just_released(KeyCode::ShiftLeft) {
+                is_random = false;
+                channels.get(noise).stop();
             }
         }
-        // if frame == (128 + 4) * 3 {
-        //     ctx.exit();
-        //     return;
-        // }
-
-        for y in 0..height {
-            for x in 0..width {
-                let idx = (y * width + x) as usize * 3;
-                if x == 0 || x == width - 1 || y == 0 || y == height - 1 {
-                    pixels[idx] = 255;
-                    pixels[idx + 1] = 255;
-                    pixels[idx + 2] = 255;
-                } else {
-                    let (r, g, b) = hsv_to_rgb(
-                        ((x as f32 + y as f32 + frame as f32 * 0.1) * 20.0 % 256.0) as u8,
-                        220,
-                        255,
-                    );
-                    pixels[idx] = r;
-                    pixels[idx + 1] = g;
-                    pixels[idx + 2] = b;
+        if is_random {
+            pixels.fill_with(|| rand.next_u16() as u8);
+        } else {
+            for y in 0..height {
+                for x in 0..width {
+                    let idx = (y * width + x) as usize * 3;
+                    if x == 0 || x == width - 1 || y == 0 || y == height - 1 {
+                        pixels[idx] = 255;
+                        pixels[idx + 1] = 255;
+                        pixels[idx + 2] = 255;
+                    } else {
+                        let (r, g, b) = hsv_to_rgb(
+                            ((x as f32 + y as f32 + frame as f32 * 0.1) * 20.0 % 256.0) as u8,
+                            220,
+                            255,
+                        );
+                        pixels[idx] = r;
+                        pixels[idx + 1] = g;
+                        pixels[idx + 2] = b;
+                    }
                 }
             }
         }
+
         let (mouse_x, mouse_y) = ctx.integer_mouse_pos();
 
         if ctx.is_mouse_in_game_area() {
@@ -149,9 +156,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         if ctx.is_key_just_pressed(KeyCode::KeyQ) {
             ctx.exit();
         }
-
-        // use tinyrand::Rand;
-        // pixels.fill_with(|| rand.next_u16() as u8);
     })?;
 
     Ok(())

@@ -208,7 +208,7 @@ impl Engine {
 
     pub fn run<F>(&mut self, mut handle_frame: F) -> Result<(), Box<dyn Error>>
     where
-        F: FnMut(&mut Context, &mut [u8]) -> (),
+        F: FnMut(&mut Context, &mut Audio, &mut [u8]) -> (),
     {
         let pixel_buf_size = (self.width * self.height) as usize * 3;
         self.pixels.resize(pixel_buf_size, 0);
@@ -262,8 +262,6 @@ impl Engine {
                                             height: self.height,
                                             current_frame,
 
-                                            audio: &mut self.audio,
-
                                             mouse_pos: self.mouse_pos,
                                             is_mouse_in_window: self.is_mouse_in_window,
 
@@ -271,7 +269,7 @@ impl Engine {
 
                                             will_exit: false,
                                         };
-                                        handle_frame(&mut ctx, &mut self.pixels);
+                                        handle_frame(&mut ctx, &mut self.audio, &mut self.pixels);
 
                                         if ctx.will_exit {
                                             window_target.exit();
@@ -400,8 +398,6 @@ pub struct Context<'a> {
     height: u32,
     current_frame: u64,
 
-    audio: &'a mut Audio,
-
     mouse_pos: (f32, f32),
     is_mouse_in_window: bool,
 
@@ -465,10 +461,6 @@ impl<'a> Context<'a> {
     #[inline]
     pub fn will_exit(&self) -> bool {
         self.will_exit
-    }
-    #[inline]
-    pub fn audio(&mut self) -> &mut Audio {
-        self.audio
     }
 
     #[inline]

@@ -3,7 +3,9 @@ use std::num::NonZeroU32;
 use glow::{Buffer, HasContext, NativeProgram, NativeTexture, Shader, VertexArray};
 use glutin::{
     config::Config,
-    context::{ContextAttributesBuilder, NotCurrentGlContext, PossiblyCurrentContext},
+    context::{
+        ContextApi, ContextAttributesBuilder, NotCurrentGlContext, PossiblyCurrentContext, Version,
+    },
     display::{GetGlDisplay, GlDisplay},
     surface::{GlSurface, Surface, SwapInterval, WindowSurface},
 };
@@ -34,22 +36,17 @@ impl Gl {
 
         let (not_current_context, shader_header) = [
             (
-                ContextAttributesBuilder::new().build(raw_window_handle),
-                // "#version 330",
-                "",
+                ContextAttributesBuilder::new()
+                    .with_context_api(ContextApi::OpenGl(Some(Version::new(3, 3))))
+                    .build(raw_window_handle),
+                "#version 330",
             ),
-            // (
-            //     ContextAttributesBuilder::new()
-            //         .with_context_api(ContextApi::Gles(None))
-            //         .build(raw_window_handle),
-            //     "#version 300 es\nprecision mediump float;",
-            // ),
-            // (
-            //     ContextAttributesBuilder::new()
-            //         .with_context_api(ContextApi::OpenGl(Some(Version::new(2, 1))))
-            //         .build(raw_window_handle),
-            //     "#version 120\n#define in attribute\n#define out varying",
-            // ),
+            (
+                ContextAttributesBuilder::new()
+                    .with_context_api(ContextApi::Gles(None))
+                    .build(raw_window_handle),
+                "#version 300 es",
+            ),
         ]
         .iter()
         .find_map(|(attr, shader_header)| unsafe {
