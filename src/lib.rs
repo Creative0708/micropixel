@@ -2,53 +2,30 @@ use std::{
     collections::HashMap,
     error::Error,
     fmt::{Debug, Display},
-    thread,
-    time::{Duration, Instant},
 };
 
 use audio::Audio;
-use glutin::config::{Config, ConfigTemplateBuilder, GlConfig};
-use glutin_winit::DisplayBuilder;
-use winit::{
-    dpi::PhysicalSize,
-    event::{ElementState, KeyEvent, StartCause},
-    event_loop::{ControlFlow, EventLoop, EventLoopBuilder},
-    keyboard::PhysicalKey,
-    window::{Window, WindowBuilder},
-};
 
-mod gl;
-use gl::Gl;
+mod platform;
+use platform::{Icon, MouseButton, Window, WindowTrait};
+
+use crate::platform::WindowClient;
+
 pub mod audio;
-pub use winit::{event::MouseButton, keyboard::KeyCode};
-pub struct Icon<'a> {
-    width: u32,
-    height: u32,
-    rgba: &'a [u8],
-}
-
-impl<'a> Icon<'a> {
-    pub fn new(width: u32, height: u32, rgba: &'a [u8]) -> Self {
-        assert!((width * height * 4) as usize == rgba.len());
-        Self {
-            width,
-            height,
-            rgba,
-        }
-    }
-}
-
-pub struct EngineBuilder<'a> {
+pub struct EngineBuilder {
     width: u32,
     height: u32,
     fullscreen: bool,
 
-    title: &'a str,
+    title: String,
 
-    icon: Option<Icon<'a>>,
+    icon: Option<Icon>,
 }
 
-impl<'a> EngineBuilder<'a> {
+mod key;
+pub use key::Key;
+
+impl EngineBuilder {
     pub fn with_dimensions(width: u32, height: u32) -> Self {
         Self {
             width,
@@ -66,7 +43,7 @@ impl<'a> EngineBuilder<'a> {
     }
 
     #[inline]
-    pub fn icon(mut self, icon: Icon<'a>) -> Self {
+    pub fn icon(mut self, icon: Icon) -> Self {
         self.icon = Some(icon);
         self
     }
@@ -79,7 +56,7 @@ impl<'a> EngineBuilder<'a> {
     }
 
     #[inline]
-    pub fn title(mut self, title: &'a str) -> Self {
+    pub fn title(mut self, title: String) -> Self {
         self.title = title;
         self
     }
@@ -89,13 +66,13 @@ impl<'a> EngineBuilder<'a> {
     }
 }
 
-impl<'a> Default for EngineBuilder<'a> {
+impl Default for EngineBuilder {
     fn default() -> Self {
         Self {
             width: 0,
             height: 0,
             fullscreen: false,
-            title: &"Game",
+            title: String::from("Game"),
             icon: None,
         }
     }
@@ -115,21 +92,9 @@ pub struct Engine {
     window_width: u32,
     window_height: u32,
 
-    fullscreen_target_dimensions: Option<(u32, u32)>,
-
-    event_loop: Option<EventLoop<()>>,
-    window: Window,
-    gl_config: Config,
-
-    gl: Option<Gl>,
+    window: Option<Window>,
 
     audio: Audio,
-
-    mouse_pos: (f32, f32),
-    is_mouse_in_window: bool,
-
-    mouse_button_states: HashMap<MouseButton, PressedState>,
-    key_states: HashMap<KeyCode, PressedState>,
 
     pixels: Vec<u8>,
 }
@@ -145,243 +110,196 @@ impl Engine {
             ..
         } = builder;
 
-        let event_loop = EventLoopBuilder::new().build().unwrap();
-
-        let monitor = event_loop
-            .primary_monitor()
-            .or_else(|| event_loop.available_monitors().next())
-            .expect("no monitors available");
-
-        let monitor_size = monitor.size();
-
-        let target_game_radii = calculate_fit_radii(
-            width as f32,
-            height as f32,
-            monitor_size.width as f32,
-            monitor_size.height as f32,
-            0.2,
-        );
-
-        let mut window_builder = WindowBuilder::new()
-            .with_title(title)
-            .with_window_icon(icon.map(|i| {
-                winit::window::Icon::from_rgba(i.rgba.to_vec(), i.width, i.height)
-                    .expect("invalid icon")
-            }));
-
-        window_builder = window_builder
-            .with_inner_size(PhysicalSize::new(target_game_radii.0, target_game_radii.1));
-
-        let display_builder = DisplayBuilder::new().with_window_builder(Some(window_builder));
-
-        let Ok((Some(window), gl_config)) =
-            display_builder.build(&event_loop, ConfigTemplateBuilder::new(), |configs| {
-                configs.max_by_key(|config| config.num_samples()).unwrap()
-            }) else { panic!("expected there to be a window") };
-
-        let window_size = window.inner_size();
+        let window = Window::new(width, height, &title, icon, fullscreen);
+        let window_size = window.window_dimensions();
 
         Self {
             width,
             height,
 
-            window_width: window_size.width,
-            window_height: window_size.height,
+            window_width: window_size.0,
+            window_height: window_size.1,
 
-            fullscreen_target_dimensions: fullscreen.then_some((width, height)),
-
-            window,
-            event_loop: Some(event_loop),
-            gl_config,
-            gl: None,
+            window: Some(window),
 
             audio: Audio::new(),
-
-            mouse_pos: (0.0, 0.0),
-            is_mouse_in_window: false,
-            mouse_button_states: HashMap::new(),
-            key_states: HashMap::new(),
 
             pixels: Vec::new(),
         }
     }
 
-    pub fn run<F>(&mut self, mut handle_frame: F) -> Result<(), Box<dyn Error>>
+    pub fn run<F>(&mut self, handle_frame: F)
     where
         F: FnMut(&mut Context, &mut Audio, &mut [u8]) -> (),
     {
         let pixel_buf_size = (self.width * self.height) as usize * 3;
         self.pixels.resize(pixel_buf_size, 0);
 
-        let frame_nanos = 1_000_000_000 / 30;
-
-        let instant = Instant::now();
-        let mut next_frame_time = instant.elapsed().as_millis() + frame_nanos;
-        let mut current_frame = 0;
-        self.event_loop
-            .take()
-            .unwrap()
-            .run(|event, window_target| {
-                use winit::event::Event as E;
-                use winit::event::WindowEvent as W;
-
-                let cur_time = instant.elapsed().as_nanos();
-                match event {
-                    E::NewEvents(StartCause::Init) => {
-                        window_target.set_control_flow(ControlFlow::Poll);
-                        self.recalculate_dimensions();
-                    }
-                    E::Resumed => {
-                        if self.gl.is_none() {
-                            self.recalculate_dimensions();
-                        }
-                    }
-                    E::Suspended => {
-                        println!("suspended");
-                        self.gl = None;
-                    }
-                    E::WindowEvent { event, .. } => match event {
-                        W::Resized(size) => {
-                            if size.width != 0 && size.height != 0 && self.gl.is_some() {
-                                self.window_width = size.width;
-                                self.window_height = size.height;
-                                self.recalculate_dimensions();
-                            }
-                        }
-                        W::CloseRequested => {
-                            window_target.exit();
-                        }
-                        W::RedrawRequested => {
-                            if let Some(ref mut gl) = self.gl {
-                                if cur_time >= next_frame_time {
-                                    while cur_time >= next_frame_time {
-                                        next_frame_time += frame_nanos;
-
-                                        let mut ctx = Context {
-                                            width: self.width,
-                                            height: self.height,
-                                            current_frame,
-
-                                            mouse_pos: self.mouse_pos,
-                                            is_mouse_in_window: self.is_mouse_in_window,
-
-                                            keys_pressed: &self.key_states,
-
-                                            will_exit: false,
-                                        };
-                                        handle_frame(&mut ctx, &mut self.audio, &mut self.pixels);
-
-                                        if ctx.will_exit {
-                                            window_target.exit();
-                                            break;
-                                        }
-
-                                        current_frame += 1;
-
-                                        for state in self.key_states.values_mut() {
-                                            if *state == PressedState::JustPressed {
-                                                *state = PressedState::Pressed;
-                                            }
-                                        }
-                                        self.key_states.retain(|_, state| {
-                                            *state != PressedState::JustReleased
-                                        });
-                                    }
-                                    gl.draw(&mut self.window, &mut self.pixels);
-                                }
-                            }
-                        }
-                        W::CursorMoved { position, .. } => {
-                            if let Some(ref gl) = self.gl {
-                                let bounding_box = gl.bounding_box();
-                                let half_dimensions = (
-                                    self.window_width as f32 * 0.5,
-                                    self.window_height as f32 * 0.5,
-                                );
-                                let (bounding_box_min_corner, bounding_box_dimensions) = (
-                                    (
-                                        bounding_box.0 * half_dimensions.0 + half_dimensions.0,
-                                        bounding_box.1 * half_dimensions.1 + half_dimensions.1,
-                                    ),
-                                    (
-                                        (bounding_box.2 - bounding_box.0) * half_dimensions.0,
-                                        (bounding_box.3 - bounding_box.1) * half_dimensions.1,
-                                    ),
-                                );
-                                self.mouse_pos = (
-                                    (position.x as f32 - bounding_box_min_corner.0)
-                                        / bounding_box_dimensions.0
-                                        * self.width as f32,
-                                    (position.y as f32 - bounding_box_min_corner.1)
-                                        / bounding_box_dimensions.1
-                                        * self.height as f32,
-                                );
-                            }
-                        }
-                        W::CursorEntered { .. } => self.is_mouse_in_window = true,
-                        W::CursorLeft { .. } => self.is_mouse_in_window = false,
-                        W::MouseInput { state, button, .. } => match state {
-                            ElementState::Pressed => {
-                                self.mouse_button_states
-                                    .insert(button, PressedState::JustPressed);
-                            }
-                            ElementState::Released => {
-                                self.mouse_button_states
-                                    .insert(button, PressedState::JustReleased);
-                            }
-                        },
-                        W::KeyboardInput {
-                            event:
-                                KeyEvent {
-                                    physical_key: PhysicalKey::Code(key_code),
-                                    state,
-                                    repeat: false,
-                                    ..
-                                },
-                            ..
-                        } => match state {
-                            ElementState::Pressed => {
-                                self.key_states.insert(key_code, PressedState::JustPressed);
-                            }
-                            ElementState::Released => {
-                                self.key_states.insert(key_code, PressedState::JustReleased);
-                            }
-                        },
-                        _ => (),
-                    },
-                    E::AboutToWait => {
-                        if cur_time < next_frame_time {
-                            thread::sleep(Duration::from_nanos(
-                                (next_frame_time - cur_time) as u64,
-                            ));
-                        }
-                        self.window.request_redraw();
-                    }
-                    _ => (),
-                }
-            })?;
-
-        Ok(())
-    }
-
-    fn recalculate_dimensions(&mut self) {
-        let gl = self
-            .gl
-            .get_or_insert_with(|| Gl::new(&self.window, &self.gl_config, self.width, self.height));
-        gl.recalculate_dimensions(
-            self.window_width,
-            self.window_height,
-            self.fullscreen_target_dimensions,
-        );
-        if self.fullscreen_target_dimensions.is_some()
-            && !(self.width == gl.width() && self.height == gl.height())
+        struct WindowRunner<'a, F>
+        where
+            F: FnMut(&mut Context, &mut Audio, &mut [u8]) -> (),
         {
-            self.width = gl.width();
-            self.height = gl.height();
-            self.pixels
-                .resize((self.width * self.height) as usize * 3, 0);
+            current_frame: u64,
+
+            bounding_box: (f32, f32, f32, f32),
+
+            engine: &'a mut Engine,
+            handle_frame: F,
+
+            is_focused: bool,
+
+            mouse_pos: (f32, f32),
+            is_mouse_in_window: bool,
+
+            mouse_button_states: HashMap<MouseButton, PressedState>,
+            key_states: HashMap<Key, PressedState>,
+
+            will_exit: bool,
         }
+
+        impl<'a, F> WindowClient for WindowRunner<'a, F>
+        where
+            F: FnMut(&mut Context, &mut Audio, &mut [u8]) -> (),
+        {
+            fn handle_event(&mut self, event: platform::WindowEvent) {
+                let engine = &mut self.engine;
+
+                match event {
+                    platform::WindowEvent::MouseButton { button, pressed } => {
+                        self.mouse_button_states.insert(
+                            button,
+                            if pressed {
+                                PressedState::JustPressed
+                            } else {
+                                PressedState::JustReleased
+                            },
+                        );
+                    }
+                    platform::WindowEvent::Key { key, pressed } => {
+                        self.key_states.insert(
+                            key,
+                            if pressed {
+                                PressedState::JustPressed
+                            } else {
+                                PressedState::JustReleased
+                            },
+                        );
+                    }
+                    platform::WindowEvent::MouseEnter { entered } => {
+                        self.is_mouse_in_window = entered
+                    }
+                    platform::WindowEvent::MousePos { x, y } => {
+                        let bounding_box = self.bounding_box;
+                        let half_dimensions = (
+                            engine.window_width as f32 * 0.5,
+                            engine.window_height as f32 * 0.5,
+                        );
+                        let (bounding_box_min_corner, bounding_box_dimensions) = (
+                            (
+                                bounding_box.0 * half_dimensions.0 + half_dimensions.0,
+                                bounding_box.1 * half_dimensions.1 + half_dimensions.1,
+                            ),
+                            (
+                                (bounding_box.2 - bounding_box.0) * half_dimensions.0,
+                                (bounding_box.3 - bounding_box.1) * half_dimensions.1,
+                            ),
+                        );
+                        self.mouse_pos = (
+                            (x as f32 - bounding_box_min_corner.0) / bounding_box_dimensions.0
+                                * engine.width as f32,
+                            (y as f32 - bounding_box_min_corner.1) / bounding_box_dimensions.1
+                                * engine.height as f32,
+                        );
+                    }
+                    platform::WindowEvent::FocusChanged { focused } => self.is_focused = focused,
+                    platform::WindowEvent::WindowClose => self.will_exit = true,
+                    platform::WindowEvent::WindowResize { width, height } => {
+                        let engine = &mut self.engine;
+                        engine.width = width;
+                        engine.height = height;
+                        let pixel_buf_size = (width * height) as usize * 3;
+                        engine.pixels.resize(pixel_buf_size, 0);
+                    }
+                }
+            }
+
+            fn frame(&mut self) -> bool {
+                let engine = &mut self.engine;
+
+                let mut ctx = Context {
+                    width: engine.width,
+                    height: engine.height,
+                    current_frame: self.current_frame,
+
+                    mouse_pos: self.mouse_pos,
+                    is_mouse_in_window: self.is_mouse_in_window,
+
+                    keys_pressed: &self.key_states,
+
+                    will_exit: self.will_exit,
+                };
+                (self.handle_frame)(&mut ctx, &mut engine.audio, &mut engine.pixels);
+
+                self.current_frame += 1;
+
+                let will_exit = !ctx.will_exit;
+
+                self.key_states
+                    .retain(|_, state| *state != PressedState::JustReleased);
+                for (_, state) in self.key_states.iter_mut() {
+                    if *state == PressedState::JustPressed {
+                        *state = PressedState::Pressed;
+                    }
+                }
+
+                will_exit
+            }
+
+            fn get_pixels(&self) -> &[u8] {
+                &self.engine.pixels
+            }
+
+            fn get_bounding_box(&self) -> (f32, f32, f32, f32) {
+                self.bounding_box
+            }
+        }
+
+        let mut window = self.window.take().unwrap();
+        window.run(&mut WindowRunner {
+            bounding_box: window.current_bounding_box(),
+            current_frame: 0,
+            engine: self,
+            handle_frame,
+
+            is_focused: false,
+
+            mouse_pos: (0.0, 0.0),
+            is_mouse_in_window: false,
+            mouse_button_states: HashMap::new(),
+            key_states: HashMap::new(),
+
+            will_exit: false,
+        });
     }
+
+    // fn recalculate_gl(&mut self) {
+    //     let gl = self
+    //         .gl
+    //         .get_or_insert_with(|| Gl::new(&self.window, &self.gl_config, self.width, self.height));
+    //     gl.recalculate_gl(
+    //         self.window_width,
+    //         self.window_height,
+    //         self.fullscreen_target_dimensions,
+    //     );
+    //     if self.fullscreen_target_dimensions.is_some()
+    //         && !(self.width == gl.width() && self.height == gl.height())
+    //     {
+    //         self.width = gl.width();
+    //         self.height = gl.height();
+    //         self.pixels
+    //             .resize((self.width * self.height) as usize * 3, 0);
+    //     }
+    // }
 
     #[inline]
     pub fn width(&self) -> u32 {
@@ -401,7 +319,7 @@ pub struct Context<'a> {
     mouse_pos: (f32, f32),
     is_mouse_in_window: bool,
 
-    keys_pressed: &'a HashMap<KeyCode, PressedState>,
+    keys_pressed: &'a HashMap<Key, PressedState>,
 
     will_exit: bool,
 }
@@ -464,19 +382,19 @@ impl<'a> Context<'a> {
     }
 
     #[inline]
-    pub fn is_key_pressed(&self, key_code: KeyCode) -> bool {
+    pub fn is_key_pressed(&self, key_code: Key) -> bool {
         self.keys_pressed
             .get(&key_code)
             .map_or(false, |state| *state != PressedState::JustReleased)
     }
     #[inline]
-    pub fn is_key_just_pressed(&self, key_code: KeyCode) -> bool {
+    pub fn is_key_just_pressed(&self, key_code: Key) -> bool {
         self.keys_pressed
             .get(&key_code)
             .map_or(false, |state| *state == PressedState::JustPressed)
     }
     #[inline]
-    pub fn is_key_just_released(&self, key_code: KeyCode) -> bool {
+    pub fn is_key_just_released(&self, key_code: Key) -> bool {
         self.keys_pressed
             .get(&key_code)
             .map_or(false, |state| *state == PressedState::JustReleased)
@@ -486,16 +404,34 @@ impl<'a> Context<'a> {
 fn calculate_fit_radii(
     width: f32,
     height: f32,
-    window_width: f32,
-    window_height: f32,
+    container_width: f32,
+    container_height: f32,
     margin: f32,
 ) -> (f32, f32) {
-    let margin_units = 2.0 * margin * f32::min(window_width, window_height);
-    let remaining_space = (window_width - margin_units, window_height - margin_units);
+    let margin_units = 2.0 * margin * f32::min(container_width, container_height);
+    let remaining_space = (
+        container_width - margin_units,
+        container_height - margin_units,
+    );
     let scaled = (remaining_space.0 / width, remaining_space.1 / height);
     let fit_scale_fac = f32::min(scaled.0, scaled.1);
     let radii = (width * fit_scale_fac, height * fit_scale_fac);
     radii
+}
+
+pub(crate) fn get_window_size(
+    width: u32,
+    height: u32,
+    monitor_width: u32,
+    monitor_height: u32,
+) -> (f32, f32) {
+    calculate_fit_radii(
+        width as f32,
+        height as f32,
+        monitor_width as f32,
+        monitor_height as f32,
+        0.2,
+    )
 }
 
 pub(crate) struct StrError {

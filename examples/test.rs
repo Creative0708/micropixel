@@ -1,9 +1,9 @@
-use micropixel::KeyCode;
+use micropixel::Key;
 use tinyrand::Rand;
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
+fn main() {
     let mut engine = micropixel::EngineBuilder::fullscreen(40, 80)
-        .title("Test")
+        .title("Test".into())
         .build();
 
     const NOTE_DATA: &[(i32, i16)] = &[
@@ -80,14 +80,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         {
             if frame == 0 {
-                // let mut v = Vec::new();
-                // for i in -5..5 {
-                //     v.push(i as f32 * 0.2);
-                // }
-                // for i in (-4..=5).rev() {
-                //     v.push(i as f32 * 0.2);
-                // }
-                // synth = audio.add_synth_channel(v.into_boxed_slice());
                 synth = audio.add_synth_channel(Box::new([-1.0, 1.0]));
                 noise = audio.add_noise_channel();
             }
@@ -95,14 +87,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let mut channels = audio.channels();
 
             if frame == 0 {
-                // channels.get(synth).play_note(-24);
                 let synth = channels.get(synth);
                 synth.play();
             }
 
             let mut val_iter = NOTE_DATA
                 .iter()
-                .skip_while(|(x, _)| (frame != (*x + 4) as u64 * 3))
+                .skip_while(|(x, _)| (frame != (*x + 4) as u64 * 6))
                 .map(|(x, y)| (*x, *y));
 
             if let Some((_, val)) = val_iter.next() {
@@ -113,11 +104,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 synth.volume_sweep(0.0, 1.0);
             }
 
-            if ctx.is_key_just_pressed(KeyCode::ShiftLeft) {
+            if ctx.is_key_just_pressed(Key::Shift) {
                 is_random = true;
                 channels.get(noise).play_note(40);
                 channels.get(synth).set_channel_volume(0.0);
-            } else if ctx.is_key_just_released(KeyCode::ShiftLeft) {
+            } else if ctx.is_key_just_released(Key::Shift) {
                 is_random = false;
                 channels.get(noise).stop();
             }
@@ -153,12 +144,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             pixels[idx..idx + 3].fill(255);
         }
 
-        if ctx.is_key_just_pressed(KeyCode::KeyQ) {
+        if ctx.is_key_just_pressed(Key::Q) {
             ctx.exit();
         }
-    })?;
-
-    Ok(())
+    });
 }
 
 fn hsv_to_rgb(h: u8, s: u8, v: u8) -> (u8, u8, u8) {

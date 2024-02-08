@@ -1,3 +1,5 @@
+#version 330
+
 uniform sampler2D tex;
 
 in mediump vec2 uv;

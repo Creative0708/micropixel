@@ -137,8 +137,6 @@ impl ActiveAudio {
             .max(SampleRate(MIN_SAMPLE_RATE));
         let config = config_range.with_sample_rate(sample_rate);
 
-        dbg!(&config);
-
         let mutex = Arc::new(Mutex::new(Vec::new()));
 
         let stream = match config.sample_format() {
