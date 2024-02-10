@@ -21,7 +21,7 @@ impl crate::platform::WindowTrait for GLFWWindow {
         width: u32,
         height: u32,
         title: &str,
-        icon: Option<crate::platform::Icon>,
+        icon: Option<crate::Icon>,
         fullscreen: bool,
     ) -> Self {
         let mut glfw = glfw::init(|error, description| {
@@ -136,14 +136,20 @@ impl crate::platform::WindowTrait for GLFWWindow {
                             glfw::Action::Repeat => continue,
                         },
                     },
-                    E::Size(width, height) => {
+                    E::Size(window_width, window_height) => {
                         self.gl.recalculate_dimensions_and_bounding_box(
-                            width as u32,
-                            height as u32,
+                            window_width as u32,
+                            window_height as u32,
                             self.fullscreen_target_dimensions,
                         );
                         let (width, height) = self.gl.dimensions();
-                        W::WindowResize { width, height }
+                        W::WindowResize {
+                            width,
+                            height,
+                            window_width: window_width as u32,
+                            window_height: window_height as u32,
+                            new_bounding_box: self.gl.current_bounding_box(),
+                        }
                     }
                     E::Close => W::WindowClose,
                     E::Focus(focused) => WindowEvent::FocusChanged { focused },

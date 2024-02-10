@@ -411,7 +411,6 @@ dependencies = [
  "cpal",
  "gl",
  "glfw",
- "raw-window-handle",
  "tinyrand",
 ]
 

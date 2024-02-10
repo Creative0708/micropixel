@@ -4,14 +4,31 @@ use std::{
     fmt::{Debug, Display},
 };
 
-use audio::Audio;
+pub mod audio;
 
 mod platform;
-use platform::{Icon, MouseButton, Window, WindowTrait};
+use audio::{ActiveAudio, AudioWrapper};
+use platform::{Window, WindowTrait};
 
 use crate::platform::WindowClient;
 
-pub mod audio;
+pub struct Icon {
+    width: u32,
+    height: u32,
+    rgba: Vec<u8>,
+}
+
+impl Icon {
+    pub fn new(width: u32, height: u32, rgba: Vec<u8>) -> Self {
+        assert!((width * height * 4) as usize == rgba.len());
+        Self {
+            width,
+            height,
+            rgba,
+        }
+    }
+}
+
 pub struct EngineBuilder {
     width: u32,
     height: u32,
@@ -78,11 +95,18 @@ impl Default for EngineBuilder {
     }
 }
 
-#[derive(PartialEq, Eq)]
+#[derive(PartialEq, Eq, Hash, Debug, Clone, Copy)]
 enum PressedState {
     JustPressed,
     Pressed,
     JustReleased,
+}
+
+#[derive(PartialEq, Eq, Hash, Debug, Clone, Copy)]
+pub enum MouseButton {
+    Left,
+    Middle,
+    Right,
 }
 
 pub struct Engine {
@@ -94,7 +118,7 @@ pub struct Engine {
 
     window: Option<Window>,
 
-    audio: Audio,
+    audio: Option<ActiveAudio>,
 
     pixels: Vec<u8>,
 }
@@ -122,7 +146,7 @@ impl Engine {
 
             window: Some(window),
 
-            audio: Audio::new(),
+            audio: ActiveAudio::new().unwrap_or_else(|err| panic!("{err:?}")),
 
             pixels: Vec::new(),
         }
@@ -130,14 +154,14 @@ impl Engine {
 
     pub fn run<F>(&mut self, handle_frame: F)
     where
-        F: FnMut(&mut Context, &mut Audio, &mut [u8]) -> (),
+        F: FnMut(&mut Context, AudioWrapper, &mut [u8]) -> (),
     {
         let pixel_buf_size = (self.width * self.height) as usize * 3;
         self.pixels.resize(pixel_buf_size, 0);
 
         struct WindowRunner<'a, F>
         where
-            F: FnMut(&mut Context, &mut Audio, &mut [u8]) -> (),
+            F: FnMut(&mut Context, AudioWrapper, &mut [u8]) -> (),
         {
             current_frame: u64,
 
@@ -159,7 +183,7 @@ impl Engine {
 
         impl<'a, F> WindowClient for WindowRunner<'a, F>
         where
-            F: FnMut(&mut Context, &mut Audio, &mut [u8]) -> (),
+            F: FnMut(&mut Context, AudioWrapper, &mut [u8]) -> (),
         {
             fn handle_event(&mut self, event: platform::WindowEvent) {
                 let engine = &mut self.engine;
@@ -213,12 +237,22 @@ impl Engine {
                     }
                     platform::WindowEvent::FocusChanged { focused } => self.is_focused = focused,
                     platform::WindowEvent::WindowClose => self.will_exit = true,
-                    platform::WindowEvent::WindowResize { width, height } => {
+                    platform::WindowEvent::WindowResize {
+                        width,
+                        height,
+                        window_width,
+                        window_height,
+                        new_bounding_box,
+                    } => {
                         let engine = &mut self.engine;
                         engine.width = width;
                         engine.height = height;
+                        engine.window_width = window_width;
+                        engine.window_height = window_height;
+
                         let pixel_buf_size = (width * height) as usize * 3;
                         engine.pixels.resize(pixel_buf_size, 0);
+                        self.bounding_box = new_bounding_box;
                     }
                 }
             }
@@ -234,11 +268,17 @@ impl Engine {
                     mouse_pos: self.mouse_pos,
                     is_mouse_in_window: self.is_mouse_in_window,
 
-                    keys_pressed: &self.key_states,
+                    mouse_button_states: &self.mouse_button_states,
+
+                    key_states: &self.key_states,
 
                     will_exit: self.will_exit,
                 };
-                (self.handle_frame)(&mut ctx, &mut engine.audio, &mut engine.pixels);
+                (self.handle_frame)(
+                    &mut ctx,
+                    AudioWrapper::new(engine.audio.as_mut()),
+                    &mut engine.pixels,
+                );
 
                 self.current_frame += 1;
 
@@ -247,6 +287,13 @@ impl Engine {
                 self.key_states
                     .retain(|_, state| *state != PressedState::JustReleased);
                 for (_, state) in self.key_states.iter_mut() {
+                    if *state == PressedState::JustPressed {
+                        *state = PressedState::Pressed;
+                    }
+                }
+                self.mouse_button_states
+                    .retain(|_, state| *state != PressedState::JustReleased);
+                for (_, state) in self.mouse_button_states.iter_mut() {
                     if *state == PressedState::JustPressed {
                         *state = PressedState::Pressed;
                     }
@@ -319,15 +366,23 @@ pub struct Context<'a> {
     mouse_pos: (f32, f32),
     is_mouse_in_window: bool,
 
-    keys_pressed: &'a HashMap<Key, PressedState>,
+    mouse_button_states: &'a HashMap<MouseButton, PressedState>,
+
+    key_states: &'a HashMap<Key, PressedState>,
 
     will_exit: bool,
 }
 
 impl<'a> Context<'a> {
+    #[inline]
+    pub fn will_exit(&self) -> bool {
+        self.will_exit
+    }
+    #[inline]
     pub fn exit(&mut self) {
         self.will_exit = true;
     }
+    #[inline]
     pub fn prevent_exit(&mut self) {
         self.will_exit = false;
     }
@@ -376,27 +431,36 @@ impl<'a> Context<'a> {
         let (mouse_x, mouse_y) = self.integer_mouse_pos();
         mouse_x >= 0 && mouse_x < self.width as i32 && mouse_y >= 0 && mouse_y < self.height as i32
     }
-    #[inline]
-    pub fn will_exit(&self) -> bool {
-        self.will_exit
-    }
 
-    #[inline]
     pub fn is_key_pressed(&self, key_code: Key) -> bool {
-        self.keys_pressed
+        self.key_states
             .get(&key_code)
             .map_or(false, |state| *state != PressedState::JustReleased)
     }
-    #[inline]
     pub fn is_key_just_pressed(&self, key_code: Key) -> bool {
-        self.keys_pressed
+        self.key_states
             .get(&key_code)
             .map_or(false, |state| *state == PressedState::JustPressed)
     }
-    #[inline]
     pub fn is_key_just_released(&self, key_code: Key) -> bool {
-        self.keys_pressed
+        self.key_states
             .get(&key_code)
+            .map_or(false, |state| *state == PressedState::JustReleased)
+    }
+    #[inline]
+    pub fn is_mouse_button_pressed(&self, mouse_button: MouseButton) -> bool {
+        self.mouse_button_states
+            .get(&mouse_button)
+            .map_or(false, |state| *state != PressedState::JustReleased)
+    }
+    pub fn is_mouse_button_just_pressed(&self, mouse_button: MouseButton) -> bool {
+        self.mouse_button_states
+            .get(&mouse_button)
+            .map_or(false, |state| *state == PressedState::JustPressed)
+    }
+    pub fn is_mouse_button_just_released(&self, mouse_button: MouseButton) -> bool {
+        self.mouse_button_states
+            .get(&mouse_button)
             .map_or(false, |state| *state == PressedState::JustReleased)
     }
 }

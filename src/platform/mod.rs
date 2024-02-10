@@ -1,7 +1,13 @@
-use crate::Key;
+use crate::{Key, MouseButton};
 
 pub trait WindowTrait: Sized {
-    fn new(width: u32, height: u32, title: &str, icon: Option<Icon>, fullscreen: bool) -> Self;
+    fn new(
+        width: u32,
+        height: u32,
+        title: &str,
+        icon: Option<crate::Icon>,
+        fullscreen: bool,
+    ) -> Self;
 
     fn window_dimensions(&self) -> (u32, u32);
 
@@ -64,40 +70,35 @@ pub trait WindowClient: Sized {
     fn get_pixels(&self) -> &[u8];
 }
 
-#[derive(PartialEq, Eq, Hash, Debug, Clone, Copy)]
-pub enum MouseButton {
-    Left,
-    Middle,
-    Right,
-}
-
-#[derive(Debug, PartialEq)]
+#[derive(Debug)]
 pub enum WindowEvent {
-    MouseButton { button: MouseButton, pressed: bool },
-    Key { key: Key, pressed: bool },
-    MouseEnter { entered: bool },
-    MousePos { x: u32, y: u32 },
-    FocusChanged { focused: bool },
+    MouseButton {
+        button: MouseButton,
+        pressed: bool,
+    },
+    Key {
+        key: Key,
+        pressed: bool,
+    },
+    MouseEnter {
+        entered: bool,
+    },
+    MousePos {
+        x: u32,
+        y: u32,
+    },
+    FocusChanged {
+        focused: bool,
+    },
     WindowClose,
-    WindowResize { width: u32, height: u32 },
+    WindowResize {
+        width: u32,
+        height: u32,
+        window_width: u32,
+        window_height: u32,
+        new_bounding_box: (f32, f32, f32, f32),
+    },
 }
 
 mod native;
 pub type Window = native::GLFWWindow;
-
-pub struct Icon {
-    width: u32,
-    height: u32,
-    rgba: Vec<u8>,
-}
-
-impl Icon {
-    pub fn new(width: u32, height: u32, rgba: Vec<u8>) -> Self {
-        assert!((width * height * 4) as usize == rgba.len());
-        Self {
-            width,
-            height,
-            rgba,
-        }
-    }
-}

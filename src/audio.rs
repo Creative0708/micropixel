@@ -12,51 +12,79 @@ use tinyrand::{Rand, StdRand};
 
 const MIN_SAMPLE_RATE: u32 = 44100;
 
-pub struct Audio {
-    active_audio: Option<ActiveAudio>,
+#[derive(PartialEq, Eq, Clone, Copy, Hash, Debug)]
+pub struct AudioChannelId(u32);
+
+impl AudioChannelId {
+    fn none() -> Self {
+        Self(0)
+    }
 }
 
-impl Audio {
-    pub(crate) fn new() -> Self {
+pub struct AudioWrapper<'a> {
+    sample_rate: u32,
+    channels: Option<MutexGuard<'a, Vec<AudioChannel>>>,
+    rand: StdRand,
+
+    none_audio_channel: AudioChannel,
+}
+
+impl<'a> AudioWrapper<'a> {
+    pub(crate) fn new(active_audio: Option<&'a mut ActiveAudio>) -> Self {
+        if let Some(active_audio) = active_audio {
+            Self {
+                sample_rate: active_audio.sample_rate,
+                channels: Some(active_audio.channels.lock().unwrap()),
+                rand: StdRand::default(),
+
+                none_audio_channel: AudioChannel::default(),
+            }
+        } else {
+            Self::inactive()
+        }
+    }
+    pub fn inactive() -> Self {
         Self {
-            active_audio: ActiveAudio::new().unwrap_or_else(|err| panic!("{err:?}")),
+            sample_rate: 0,
+            channels: None,
+            rand: StdRand::default(),
+
+            none_audio_channel: AudioChannel::default(),
         }
     }
 
     #[inline]
     pub fn is_active(&self) -> bool {
-        self.active_audio.is_some()
+        self.channels.is_some()
     }
-    #[inline]
-    pub fn add_synth_channel(&mut self, sample: Box<[f32]>) -> u32 {
-        if let Some(active_audio) = &mut self.active_audio {
-            active_audio.add_synth_channel(sample)
+    pub fn add_synth_channel(&mut self, sample: Box<[f32]>) -> AudioChannelId {
+        if let Some(channels) = &mut self.channels {
+            channels.push(AudioChannel::synth(self.sample_rate, sample));
+            AudioChannelId(channels.len() as u32 - 1)
         } else {
-            0
+            AudioChannelId::none()
         }
     }
-    #[inline]
-    pub fn add_noise_channel(&mut self) -> u32 {
-        if let Some(active_audio) = &mut self.active_audio {
-            active_audio.add_noise_channel()
+    pub fn add_noise_channel(&mut self) -> AudioChannelId {
+        if let Some(channels) = &mut self.channels {
+            channels.push(AudioChannel::noise(self.sample_rate, self.rand.next_u32()));
+            AudioChannelId(channels.len() as u32 - 1)
         } else {
-            0
+            AudioChannelId::none()
         }
     }
-    #[inline]
-    pub fn channels(&mut self) -> AudioChannels {
-        if let Some(active_audio) = &mut self.active_audio {
-            active_audio.channels()
+    pub fn get_channel(&mut self, id: AudioChannelId) -> &mut AudioChannel {
+        if let Some(channels) = &mut self.channels {
+            channels.get_mut(id.0 as usize).expect("invalid channel id")
         } else {
-            AudioChannels(None)
+            &mut self.none_audio_channel
         }
     }
 }
 
-struct ActiveAudio {
+pub(crate) struct ActiveAudio {
     sample_rate: u32,
     channels: Arc<Mutex<Vec<AudioChannel>>>,
-    rand: StdRand,
     _stream: Stream,
 }
 
@@ -97,7 +125,7 @@ impl ActiveAudio {
         tot
     }
 
-    fn new() -> Result<Option<Self>, Box<dyn Error>> {
+    pub fn new() -> Result<Option<Self>, Box<dyn Error>> {
         let host = cpal::default_host();
         let Some(device) = host.default_output_device() else { return Ok(None); };
         let config_range = device
@@ -178,38 +206,10 @@ impl ActiveAudio {
         let obj = Self {
             sample_rate: sample_rate.0,
             channels: mutex.clone(),
-            rand: Default::default(),
             _stream: stream,
         };
 
         Ok(Some(obj))
-    }
-
-    pub fn add_synth_channel(&mut self, sample: Box<[f32]>) -> u32 {
-        let mut channels = self.channels.lock().unwrap();
-        channels.push(AudioChannel::synth(self.sample_rate, sample));
-        channels.len() as u32 - 1
-    }
-    pub fn add_noise_channel(&mut self) -> u32 {
-        let mut channels = self.channels.lock().unwrap();
-        channels.push(AudioChannel::noise(self.sample_rate, self.rand.next_u32()));
-        channels.len() as u32 - 1
-    }
-
-    pub fn channels(&mut self) -> AudioChannels {
-        AudioChannels(Some(self.channels.lock().unwrap()))
-    }
-}
-
-pub struct AudioChannels<'a>(Option<MutexGuard<'a, Vec<AudioChannel>>>);
-
-impl<'a> AudioChannels<'a> {
-    pub fn get(&mut self, id: u32) -> &mut AudioChannel {
-        self.0
-            .as_mut()
-            .expect("not initialized")
-            .get_mut(id as usize)
-            .expect("invalid index")
     }
 }
 
