@@ -10,7 +10,6 @@ bytemuck = {version = "1.14.1", features = ["must_cast"]}
 cpal = "0.15.2"
 gl = "0.14.0"
 glfw = "0.54.0"
-tinyrand = "0.5.0"
 
 [profile.release]
 codegen-units = 1
@@ -28,7 +27,7 @@ ar = "x86_64-apple-darwin21.1-ar"
 linker = "x86_64-apple-darwin21.1-clang"
 
 [[example]]
-name = "test"
+name = "window"
 
 [[example]]
 name = "button"

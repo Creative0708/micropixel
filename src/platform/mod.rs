@@ -65,7 +65,7 @@ pub(crate) fn calculate_dimensions_and_bounding_box(
 }
 pub trait WindowClient: Sized {
     fn handle_event(&mut self, event: WindowEvent);
-    fn frame(&mut self) -> bool;
+    fn frame(&mut self, rand_source: u64) -> bool;
     fn get_bounding_box(&self) -> (f32, f32, f32, f32);
     fn get_pixels(&self) -> &[u8];
 }

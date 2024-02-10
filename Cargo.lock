@@ -411,7 +411,6 @@ dependencies = [
  "cpal",
  "gl",
  "glfw",
- "tinyrand",
 ]
 
 [[package]]
@@ -730,12 +729,6 @@ dependencies = [
  "quote",
  "syn 2.0.48",
 ]
-
-[[package]]
-name = "tinyrand"
-version = "0.5.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "87ffaad2263779579369d45f65cad0647c860893d27e4543cdcc1e428d07da2c"
 
 [[package]]
 name = "toml_datetime"

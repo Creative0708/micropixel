@@ -154,14 +154,14 @@ impl Engine {
 
     pub fn run<F>(&mut self, handle_frame: F)
     where
-        F: FnMut(&mut Context, AudioWrapper, &mut [u8]) -> (),
+        F: FnMut(&mut Context, AudioWrapper, &mut [[u8; 3]]) -> (),
     {
         let pixel_buf_size = (self.width * self.height) as usize * 3;
         self.pixels.resize(pixel_buf_size, 0);
 
         struct WindowRunner<'a, F>
         where
-            F: FnMut(&mut Context, AudioWrapper, &mut [u8]) -> (),
+            F: FnMut(&mut Context, AudioWrapper, &mut [[u8; 3]]) -> (),
         {
             current_frame: u64,
 
@@ -183,7 +183,7 @@ impl Engine {
 
         impl<'a, F> WindowClient for WindowRunner<'a, F>
         where
-            F: FnMut(&mut Context, AudioWrapper, &mut [u8]) -> (),
+            F: FnMut(&mut Context, AudioWrapper, &mut [[u8; 3]]) -> (),
         {
             fn handle_event(&mut self, event: platform::WindowEvent) {
                 let engine = &mut self.engine;
@@ -257,7 +257,7 @@ impl Engine {
                 }
             }
 
-            fn frame(&mut self) -> bool {
+            fn frame(&mut self, rand_source: u64) -> bool {
                 let engine = &mut self.engine;
 
                 let mut ctx = Context {
@@ -276,8 +276,8 @@ impl Engine {
                 };
                 (self.handle_frame)(
                     &mut ctx,
-                    AudioWrapper::new(engine.audio.as_mut()),
-                    &mut engine.pixels,
+                    AudioWrapper::new(engine.audio.as_mut(), rand_source),
+                    bytemuck::try_cast_slice_mut(engine.pixels.as_mut_slice()).unwrap(),
                 );
 
                 self.current_frame += 1;

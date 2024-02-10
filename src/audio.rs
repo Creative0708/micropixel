@@ -8,7 +8,6 @@ use cpal::{
     Device, OutputCallbackInfo, Sample, SampleFormat, SampleRate, SizedSample, Stream,
     StreamConfig, SupportedBufferSize,
 };
-use tinyrand::{Rand, StdRand};
 
 const MIN_SAMPLE_RATE: u32 = 44100;
 
@@ -21,21 +20,28 @@ impl AudioChannelId {
     }
 }
 
+// Not a good hash but appears random enough
+fn simple_hash(x: u32) -> u32 {
+    let x = x.overflowing_mul(x ^ 0x84da2122).0 ^ 0x41b6b602;
+    let x = x.overflowing_mul(x ^ 0x2eecbb95).0 ^ 0x67d37dec;
+    x
+}
+
 pub struct AudioWrapper<'a> {
     sample_rate: u32,
     channels: Option<MutexGuard<'a, Vec<AudioChannel>>>,
-    rand: StdRand,
+    rand: u32,
 
     none_audio_channel: AudioChannel,
 }
 
 impl<'a> AudioWrapper<'a> {
-    pub(crate) fn new(active_audio: Option<&'a mut ActiveAudio>) -> Self {
+    pub(crate) fn new(active_audio: Option<&'a mut ActiveAudio>, rand_source: u64) -> Self {
         if let Some(active_audio) = active_audio {
             Self {
                 sample_rate: active_audio.sample_rate,
                 channels: Some(active_audio.channels.lock().unwrap()),
-                rand: StdRand::default(),
+                rand: simple_hash(rand_source as u32),
 
                 none_audio_channel: AudioChannel::default(),
             }
@@ -47,10 +53,15 @@ impl<'a> AudioWrapper<'a> {
         Self {
             sample_rate: 0,
             channels: None,
-            rand: StdRand::default(),
+            rand: 0,
 
             none_audio_channel: AudioChannel::default(),
         }
+    }
+
+    fn next_rand(&mut self) -> u32 {
+        self.rand = simple_hash(self.rand);
+        self.rand
     }
 
     #[inline]
@@ -66,8 +77,9 @@ impl<'a> AudioWrapper<'a> {
         }
     }
     pub fn add_noise_channel(&mut self) -> AudioChannelId {
+        let rand = self.next_rand();
         if let Some(channels) = &mut self.channels {
-            channels.push(AudioChannel::noise(self.sample_rate, self.rand.next_u32()));
+            channels.push(AudioChannel::noise(self.sample_rate, rand));
             AudioChannelId(channels.len() as u32 - 1)
         } else {
             AudioChannelId::none()

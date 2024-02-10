@@ -183,7 +183,7 @@ impl crate::platform::WindowTrait for GLFWWindow {
             while cur_time >= next_frame_time {
                 next_frame_time += frame_nanos;
 
-                if !client.frame() {
+                if !client.frame(cur_time as u64) {
                     return;
                 }
             }
